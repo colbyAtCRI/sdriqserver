@@ -22,11 +22,11 @@ environment one risks only screwing the environment up and not the Version
 of python that make your system software run. Virtual environments can be
 deleted and remade at will.
 
-
-`python3 -m venv <my-env-dir>
+```
+python3 -m venv <my-env-dir>
 source <my-env-dir>/bin/activate
-pip install numpy pylibftdi`
-
+pip install numpy pylibftdi
+```
 
 On MacOS one will need homebrew installed. Python libraries usually wrap c or
 c++ libs which will need to be installed to be called. The ones I use that
@@ -45,3 +45,19 @@ points to your virtual python environment.
 `#!<full-path-to-my-env-dir>/bin/python`
 
 Also, the file `server.py` should be made executable
+# Running
+On linux or MacOS one calls up a shell and types
+```
+./server.py [-b][-r <radio>][-v]
+```
+If a radio is not plugged into USB, the server terminates. The optional
+command line switches are,
+
+`-b` for disabling the cold boot option. On power up or hard reset, the SDR-IQ
+resets memory. `-b` is provided to skip the cold boot detect.
+
+`-r <radio>` sets the radio name which will be opened. The default value for
+the name is SDR-IQ. Others that might work are, SDR-IP or SDR-14 depending on
+the radio being used.
+
+`-v` selects verbose mode which prints reassuring calming helpful messages.
