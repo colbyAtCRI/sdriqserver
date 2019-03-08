@@ -1,13 +1,13 @@
 #!/Users/paulcolby/env/py3/bin/python
 from pylibftdi.device import Device
 from pylibftdi.driver import Driver
-from queue import Queue
 from threading import Thread, Event
 from time import sleep
 from socket import *
 from sdrcmds import SdrIQByteCommands as bc
 import numpy as np
 from struct import unpack
+import sys, getopt
 
 def IQ(msg):
     for k in range(2,len(msg),2):
@@ -23,17 +23,8 @@ def prnmsg(msg):
     return ' '.join(['['+hex(b).upper()+']' for b in msg]).replace('X','x')
 
 class Validator:
-    def __init__(self):
-        self.ValidHeader = {
-            b'\x04\x20' : True,
-            b'\x05\x20' : True,
-            b'\x05\x00' : True,
-            b'\x06\x00' : True,
-            b'\x08\x00' : True,
-            b'\x0A\x00' : True,
-            b'\x09\x00' : True,
-            b'\x09\xA0' : True
-        }
+    def __init__(self,output):
+        self.print = output
 
         self.MsgGroup = {
             b'\x20' : self.onGet,
@@ -61,16 +52,16 @@ class Validator:
         self.MsgGroup.get(msg[1:2],self.unknown)(msg)
 
     def unknown(self,msg):
-        print(f'Unknown Message: {prnmsg(msg)}')
+        self.print(f'Unknown Message: {prnmsg(msg)}')
 
     def onGet(self,msg):
-        print(f'Get {self.DataItem.get(msg[2:3],f"Unknown: {prnmsg(msg)}")}')
+        self.print(f'Get {self.DataItem.get(msg[2:3],f"Unknown: {prnmsg(msg)}")}')
 
     def onSet(self,msg):
-        print(f'Set {self.DataItem.get(msg[2:3],f"Unknown: {prnmsg(msg)}")}')
+        self.print(f'Set {self.DataItem.get(msg[2:3],f"Unknown: {prnmsg(msg)}")}')
 
     def onData(self,msg):
-        pass
+        return
 
     def onAD6620(self,msg):
         if msg[0] != 9:
@@ -95,33 +86,54 @@ def readMsg(source):
         msg = msg + source(length-len(msg))
     return msg
 
-class Listener(Thread):
+class Listener:
     def __init__(self):
-        super(Listener,self).__init__()
-        self.findRadio()
         self.makeItStop  = Event()
-        self.abandomHope = Event()
-        self.daemon = True
+        self.warmBoot = False
+        self.radioName = b'SDR-IQ'
+        self.print = self.noOp
+        self.boot = self.coldBoot
+        self.doCommandline()
+        self.findRadio()
+
+    def doCommandline(self):
+        try:
+            opts, args = getopt.getopt(sys.argv[1:],'br:v')
+        except getopt.GetoptError:
+            print('usage: server [-b,-r <radio>, -v]')
+            sys.exit(2)
+        for op in opts:
+            if op[0] == '-b':
+                self.boot = self.noOp
+            elif op[0] == '-r':
+                self.radioName = bytes(op[1],encoding='utf-8')
+            elif op[0] == '-v':
+                self.print = print
+            else:
+                print(f'unknown option: {op}')
 
     def stop(self):
-        self.abandomHope.set()
+        self.makeItStop.set()
+
+    def noOp(self,*kargs):
+        return
+
+    def coldBoot(self):
+        freq = self.GetFreq()
+        if (freq == 680000):
+            self.print('Cold boot detected')
+            self.SetDSP()
+            self.SetFreq(680001)
 
     def findRadio(self):
         self.devices = Driver().list_devices()
         self.radio = None
         for d in self.devices:
-            if (d[1] == b'SDR-IQ'):
+            if (d[1] == self.radioName):
                 self.radio = Device(encoding='utf-8')
-                #self.radio.baudrate = 13200
         if self.radio:
             self.radio.flush()
-            freq = self.GetFreq()
-            if (freq == 680000):
-                print('Cold boot detected')
-                self.SetDSP()
-                self.SetFreq(680001)
-            #self.SetRFGain()
-            #self.SetIFGain()
+            self.boot()
 
     def GetFreq(self):
         self.radio.write(bc.GetFreq)
@@ -152,9 +164,9 @@ class Listener(Thread):
         cmd[5] = 0
         self.radio.write(bytes(cmd))
 
-    def run(self):
+    def serve(self):
         if not self.radio:
-            print('no SDR-IQ found')
+            print(f'Radio {self.radioName.decode()} not found')
             return
         self.tcp = socket(AF_INET,SOCK_STREAM)
         self.tcp.bind(('localhost',50000))
@@ -162,18 +174,18 @@ class Listener(Thread):
         self.udp = socket(AF_INET,SOCK_DGRAM)
         self.udp.setsockopt(SOL_SOCKET,SO_REUSEADDR,1)
         self.udp.bind(('localhost',50100))
-        print('listening on port 50000')
+        self.print('listening on port 50000')
         try:
             self.connect = self.tcp.accept()
         except:
             return
-        print(f'Connected: {self.connect[1][0]} on port {self.connect[1][1]}')
+        self.print(f'Connected: {self.connect[1][0]} on port {self.connect[1][1]}')
         self.writer = RadioWriter(self)
         self.reader = RadioReader(self)
         self.writer.start()
         self.reader.start()
         self.makeItStop.wait()
-        print('Server - done')
+        self.print('Server - done')
 
 class RadioWriter(Thread):
     def __init__(self,listener):
@@ -181,7 +193,8 @@ class RadioWriter(Thread):
         self.makeItStop = listener.makeItStop
         self.radio      = listener.radio
         self.tcp        = listener.connect[0]
-        self.logger     = Validator()
+        self.print      = listener.print
+        self.logger     = Validator(listener.print)
         self.daemon     = True
 
     def run(self):
@@ -192,7 +205,7 @@ class RadioWriter(Thread):
                 continue
             self.logger.log(msg)
             self.radio.write(msg)
-        print('RadioWriter - done')
+        self.print('RadioWriter - done')
 
 class RadioReader(Thread):
     def __init__(self,listener):
@@ -202,6 +215,7 @@ class RadioReader(Thread):
         self.rAddress   = ('localhost',50000)
         self.udp        = listener.udp
         self.radio      = listener.radio
+        self.print      = listener.print
         self.sequence   = 0
         self.daemon     = True
 
@@ -234,12 +248,11 @@ class RadioReader(Thread):
                 self.sendData(msg[2:])
             else:
                 self.tcp.send(msg)
-        print('RadioReader - done')
+        self.print('RadioReader - done')
 
 if __name__ == '__main__':
    L = Listener()
-   L.start()
    try:
-        L.join()
+        L.serve()
    except KeyboardInterrupt:
         print('\nbye')
