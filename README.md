@@ -22,11 +22,11 @@ environment one risks only screwing the environment up and not the Version
 of python that make your system software run. Virtual environments can be
 deleted and remade at will.
 
-'''
-python3 -m venv <my-env-dir>
+
+`python3 -m venv <my-env-dir>
 source <my-env-dir>/bin/activate
-pip install numpy pylibftdi
-'''
+pip install numpy pylibftdi`
+
 
 On MacOS one will need homebrew installed. Python libraries usually wrap c or
 c++ libs which will need to be installed to be called. The ones I use that
@@ -45,4 +45,3 @@ points to your virtual python environment.
 `#!<full-path-to-my-env-dir>/bin/python`
 
 Also, the file `server.py` should be made executable
- 
