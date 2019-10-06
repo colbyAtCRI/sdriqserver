@@ -45,7 +45,7 @@ points to your virtual python environment.
 `#!<full-path-to-my-env-dir>/bin/python`
 
 Also, the file `server.py` should be made executable
-# Running
+## Running
 On linux or MacOS one calls up a shell and types
 ```
 ./server.py [-b][-r <radio>][-v]
