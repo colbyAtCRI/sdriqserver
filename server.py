@@ -1,4 +1,13 @@
 #!/Users/paulcolby/env/py3/bin/python
+
+# TODO:  need to support this message from gqrx:
+# listening on port 50000
+# Connected: 192.168.76.28 on port 61587
+# Get Name
+# Get Serial Number
+# Get Unknown: [0x4] [0x20] [0x9] [0x0]
+
+
 from pylibftdi.device import Device
 from pylibftdi.driver import Driver
 from threading import Thread, Event
@@ -8,6 +17,12 @@ from sdrcmds import SdrIQByteCommands as bc
 import numpy as np
 from struct import unpack
 import sys, getopt
+
+
+iqDataSendHeaderSize = 4
+iqDataSendBlockSize = 1024   # must be a factor of 8192; SdrDx only likes 1024
+iqDataSendMsgLength = iqDataSendBlockSize + iqDataSendHeaderSize
+
 
 def IQ(msg):
     for k in range(2,len(msg),2):
@@ -21,6 +36,7 @@ def power(msg):
 
 def prnmsg(msg):
     return ' '.join(['['+hex(b).upper()+']' for b in msg]).replace('X','x')
+
 
 class Validator:
     def __init__(self,output):
@@ -74,17 +90,31 @@ class Validator:
     def valid(self,msg):
         return Validator.get(msg[0:2],False)
 
+
 def readMsg(source):
+
+    # First, get the message length from the first two bytes of the message.
     msg = source(2)
     if not msg:
         return msg
+    # TODO:  shouldn't the comparison really be msg[0] == 0 && (msg[1] & 0x1f) == 0 because
+    #        zero length in the header means 8192?  The 3 upper bits of 0x80 is the message
+    #        type (IQ data).
     if msg == b'\x00\x80':
+        # This is an IQ data message with 2 header bytes and the maximum number of data bytes (8192).
         length = 8194
     else:
-        length = msg[0] + (msg[1] & 0x1F)*256
+        # Byte 0 holds the 8 least-significant bits of the message length.
+        # The lower 5 bits of byte 1 are the 5 most-significant bits.
+        # TODO:  why aren't we adding 2 for the header bytes?
+        length = msg[0] + (msg[1] & 0x1F) * 256
+
+    # Read the rest of the message up to the computed length.
     while len(msg) != length:
         msg = msg + source(length-len(msg))
+
     return msg
+
 
 class Listener:
     def __init__(self):
@@ -129,11 +159,19 @@ class Listener:
         self.devices = Driver().list_devices()
         self.radio = None
         for d in self.devices:
-            if (d[1] == self.radioName):
-                self.radio = Device(encoding='utf-8')
+            # ross - print('d[1]="{0}" self.radioName="{1}"'.format(d[1], self.radioName))
+            if (d[1] == self.radioName.decode('utf-8')):
+                self.print('found radio')
+                try:
+                    self.radio = Device(encoding='utf-8')
+                except FtdiError as err:
+                    print('Device instantiation failed:  {0}'.format(err))
         if self.radio:
+            print('connected to radio')
             self.radio.flush()
             self.boot()
+        else:
+            print('unable to connect to radio')
 
     def GetFreq(self):
         self.radio.write(bc.GetFreq)
@@ -169,22 +207,33 @@ class Listener:
             print(f'Radio {self.radioName.decode()} not found')
             return
         self.tcp = socket(AF_INET,SOCK_STREAM)
-        self.tcp.bind(('localhost',50000))
+        # ross 2020-06-10:  We want to accept connections from anywhere.
+        # '' is equivalent to AF_ANY.
+        #self.tcp.bind(('localhost',50000))
+        self.tcp.bind(('',50000))
         self.tcp.listen(1)
         self.udp = socket(AF_INET,SOCK_DGRAM)
         self.udp.setsockopt(SOL_SOCKET,SO_REUSEADDR,1)
-        self.udp.bind(('localhost',50100))
+        # ross 2020-06-10:  We want to send data to anywhere
+        # '' is equivalent to AF_ANY.
+        #self.udp.bind(('localhost',50100))
+        self.udp.bind(('',50100))
         self.print('listening on port 50000')
         try:
             self.connect = self.tcp.accept()
         except:
+            # ross TODO:  print the exception
             return
         self.print(f'Connected: {self.connect[1][0]} on port {self.connect[1][1]}')
+        # ross - Connected: 192.168.76.28 on port 60887
         self.writer = RadioWriter(self)
         self.reader = RadioReader(self)
         self.writer.start()
         self.reader.start()
         self.makeItStop.wait()
+        self.print('closing TCP and UDP sockets')
+        self.tcp.close()
+        self.udp.close()
         self.print('Server - done')
 
 class RadioWriter(Thread):
@@ -198,12 +247,13 @@ class RadioWriter(Thread):
         self.daemon     = True
 
     def run(self):
+        # Receive messages from the SDR client and pass them on to the radio.
         while not self.makeItStop.isSet():
             msg = readMsg(self.tcp.recv)
             if not msg:
                 self.makeItStop.set()
                 continue
-            self.logger.log(msg)
+            self.logger.log(msg)    # ross - does Validator do anything other than just log shit?
             self.radio.write(msg)
         self.print('RadioWriter - done')
 
@@ -212,8 +262,9 @@ class RadioReader(Thread):
         super(RadioReader,self).__init__()
         self.makeItStop = listener.makeItStop
         self.tcp        = listener.connect[0]
-        self.rAddress   = ('localhost',50000)
-        self.udp        = listener.udp
+        #self.rAddress   = ('localhost',50000)   # ross - address for sending ADC data via UDP - ? in SdrDx
+        self.rAddress   = (listener.connect[1][0], 50000)   # send ADC data to the host that connected to us
+        self.udp        = listener.udp          # ross - ends up being L's udp object set up in Listener::serve
         self.radio      = listener.radio
         self.print      = listener.print
         self.sequence   = 0
@@ -227,26 +278,37 @@ class RadioReader(Thread):
         return self.sequence
 
     def sendData(self,msg):
-        ba = bytearray(1024+4)
-        for k in range(4):
+        #self.print('sending data via UDP ({0})'.format(len(msg)))
+        ba = bytearray(iqDataSendMsgLength)
+        for k in range(int(len(msg) / iqDataSendBlockSize)):
+            #self.print(f'  block {k}')
             sn = self.sequenceNumber()
-            ba[0] = 0x04
-            ba[1] = 0x84
+            # TODO:  write a function that formats the 16-bit header
+            #ba[0] = 0x04    # length lsb (8 bits)
+            #ba[1] = 0x84    # message type 0b100 and length msb (5 bits)
+            ba[0] = int(iqDataSendMsgLength) & 0xff                 # length lsb (8 bits)
+            ba[1] = 0x80 | ((int(iqDataSendMsgLength) >> 8) & 0x1f)   # message type 0b100 and length msb (5 bits)
             ba[2] = sn & 0xFF
-            ba[3] = (sn>>8) & 0xFF
-            ba[4:] = msg[k*1024:(k+1)*1024]
-            self.udp.sendto(ba,self.rAddress)
+            ba[3] = (sn >> 8) & 0xFF
+            ba[4:] = msg[k * iqDataSendBlockSize : (k + 1) * iqDataSendBlockSize]
+            #print('k={:} 0x{:02X} 0x{:02X} 0x{:02X} 0x{:02X}'.format(k, ba[0], ba[1], ba[2], ba[3]))
+            self.udp.sendto(ba,self.rAddress)  # ross - this is where we send ADC data via UDP
 
     def run(self):
+        # Receive messages from the radio.  Send ADC data via
+        # UDP and other messages via TCP to the SDR client.
         while not self.makeItStop.isSet():
             msg = readMsg(self.radio.read)
             if not msg:
                 sleep(0.01)
                 continue
+            #ross print('got msg {0}'.format(msg))
             if msg[0:2] == b'\x00\x80':
                 #print(f'power = {power(msg)}')
-                self.sendData(msg[2:])
+                #self.print('sending UDP ({0})'.format(len(msg)))
+                self.sendData(msg[2:])  # ross - send ADC data
             else:
+                #self.print('sending TCP ({0})'.format(len(msg)))
                 self.tcp.send(msg)
         self.print('RadioReader - done')
 
