@@ -1,3 +1,14 @@
+# This Fork
+This is a fork of Paul Colby's TCP/IP server for the RFSpace SDR-IQ software-
+defined radio receiver.  Significant modifications in this repo include:
+
+* Accept connections from remote hosts
+* Comments and prints to help understand how the code works
+
+Tested on a Raspberry Pi 4 with a remote connection from SdrDx on macOS.
+
+Below is Paul's README for the project.
+
 # Intent
 Provide a replacement for the USB to TCP/IP server, siqs_ftdi, formally provided
 by the CuteSdr software bundle on Ubuntu. siqs_ftdi was need to run my SDR-IQ USB
