@@ -1,4 +1,9 @@
 # This Fork
+I've merged skipzones' fork into master. This fixes two issues one of which
+caused me to give up on SdrDx which is a shame because it's a really nice
+SDR program. If done some small amount running the current SdrDx beta (2.20m) 
+and it crashes infrequently enough to be usable with this server. 
+ 
 This is a fork of Paul Colby's TCP/IP server for the RFSpace SDR-IQ software-
 defined radio receiver.  Significant modifications in this repo include:
 
